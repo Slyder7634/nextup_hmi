@@ -15,7 +15,6 @@ try:
     VTK_AVAILABLE = True
 except ImportError:
     VTK_AVAILABLE = False
-    print("Error: VTK not installed")
 
 try:
     import tf2_ros
@@ -101,21 +100,21 @@ class Robot3DViewer(QWidget):
         self.latest_ee_pose = None
         self.latest_joint_positions = {}
         
-        # Lazy rendering
+        # Lazy rendering - track what needs updating
         self._needs_rerender = False
         self._is_visible = True
         self._frame_counter = 0
         self._last_rendered_poses = {}
         self._last_debug_state = {}
         
-        # Setup VTK with lower quality
+        # Setup VTK
         self.setup_vtk()
         self.load_robot_meshes()
         self.setup_camera()
         self.create_motion_indicators()
         self.create_ee_axes()
         
-        # Timer for TF updates
+        # Timer for TF updates - 70ms is acceptable for tracking
         self.update_timer = QTimer()
         self.update_timer.setInterval(70)
         self.update_timer.timeout.connect(self.update_from_tf)
@@ -124,7 +123,7 @@ class Robot3DViewer(QWidget):
         # Debug overlay (non-critical, very slow)
         self.setup_debug_overlay()
         
-        # Visibility tracking
+        # Visibility tracking - stop rendering when hidden
         self.installEventFilter(self)
     
     def eventFilter(self, obj, event):
@@ -143,39 +142,39 @@ class Robot3DViewer(QWidget):
         self.debug_frame.setStyleSheet("""
             QFrame {
                 background-color: rgba(10, 10, 26, 200);
-                border: 1px solid #2a2a4a;
+                border: 1px solid #232d3d;
                 border-radius: 6px;
                 padding: 8px;
             }
             QLabel {
-                color: #c0c0e0;
+                color: #dbe4f0;
                 font-family: monospace;
                 font-size: 10px;
                 background-color: transparent;
             }
             .title-label {
-                color: #6a6aae;
+                color: #22d3ee;
                 font-weight: bold;
                 font-size: 11px;
             }
             .value-label {
-                color: #8a8ace;
+                color: #67e8f9;
                 font-weight: bold;
             }
             .status-ok {
-                color: #4aee6a;
+                color: #2dd97a;
             }
             .status-warning {
                 color: #ffaa44;
             }
             .status-error {
-                color: #ff4444;
+                color: #ff3b5c;
             }
             .section-label {
-                color: #6a6aae;
+                color: #22d3ee;
                 font-size: 9px;
                 font-weight: bold;
-                border-bottom: 1px solid #2a2a4a;
+                border-bottom: 1px solid #232d3d;
                 padding-bottom: 2px;
             }
         """)
@@ -193,7 +192,7 @@ class Robot3DViewer(QWidget):
         row += 1
         
         sep = QLabel("─" * 35)
-        sep.setStyleSheet("color: #2a2a4a;")
+        sep.setStyleSheet("color: #232d3d;")
         debug_layout.addWidget(sep, row, 0, 1, 2)
         row += 1
         
@@ -210,7 +209,7 @@ class Robot3DViewer(QWidget):
         row += 1
         
         sep2 = QLabel("─" * 35)
-        sep2.setStyleSheet("color: #2a2a4a;")
+        sep2.setStyleSheet("color: #232d3d;")
         debug_layout.addWidget(sep2, row, 0, 1, 2)
         row += 1
         
@@ -284,11 +283,11 @@ class Robot3DViewer(QWidget):
                 orient = self.latest_ee_pose['orientation']
                 
                 self.ee_pos_label.setText(f"({pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f})")
-                self.ee_pos_label.setStyleSheet("color: #8a8ace; font-weight: bold;")
+                self.ee_pos_label.setStyleSheet("color: #67e8f9; font-weight: bold;")
                 
                 roll, pitch, yaw = self.quaternion_to_rpy(orient[0], orient[1], orient[2], orient[3])
                 self.ee_rpy_label.setText(f"({math.degrees(roll):.1f}°, {math.degrees(pitch):.1f}°, {math.degrees(yaw):.1f}°)")
-                self.ee_rpy_label.setStyleSheet("color: #8a8ace; font-weight: bold;")
+                self.ee_rpy_label.setStyleSheet("color: #67e8f9; font-weight: bold;")
             else:
                 self.ee_pos_label.setText("--")
                 self.ee_rpy_label.setText("--")
@@ -298,10 +297,17 @@ class Robot3DViewer(QWidget):
                     if joint_name in self.latest_joint_positions:
                         val = self.latest_joint_positions[joint_name]
                         label.setText(f"{val:.3f}")
-                        label.setStyleSheet("color: #8a8ace; font-weight: bold;")
+                        label.setStyleSheet("color: #67e8f9; font-weight: bold;")
                     else:
                         label.setText("--")
                         label.setStyleSheet("color: #666;")
+            
+            if self.tf_initialized:
+                self.tf_status_label.setText("✓ Active")
+                self.tf_status_label.setStyleSheet("color: #2dd97a;")
+            else:
+                self.tf_status_label.setText("⏳ Waiting...")
+                self.tf_status_label.setStyleSheet("color: #ffaa44;")
             
         except Exception:
             pass
@@ -314,6 +320,7 @@ class Robot3DViewer(QWidget):
         
         self.renderer = vtk.vtkRenderer()
         self.renderer.SetBackground(0.03, 0.03, 0.06)
+        self.renderer.SetLayer(0)
         
         # Disable expensive features
         self.renderer.SetUseFXAA(False)
@@ -321,15 +328,24 @@ class Robot3DViewer(QWidget):
         
         # Setup minimal lighting
         self.setup_lighting()
-        self.vtk_widget.GetRenderWindow().AddRenderer(self.renderer)
-        
-        self.interactor = self.vtk_widget.GetRenderWindow().GetInteractor()
-        self.interactor.SetInteractorStyle(vtk.vtkInteractorStyleTrackballCamera())
+
+        # Second render layer for motion indicators (arrows/rotation arcs)
+        self.indicator_renderer = vtk.vtkRenderer()
+        self.indicator_renderer.SetLayer(1)
+        self.indicator_renderer.SetActiveCamera(self.renderer.GetActiveCamera())
+        self.indicator_renderer.EraseOff()
+
+        render_window = self.vtk_widget.GetRenderWindow()
+        render_window.SetNumberOfLayers(2)
+        render_window.AddRenderer(self.renderer)
+        render_window.AddRenderer(self.indicator_renderer)
         
         # Reduce render quality
-        render_window = self.vtk_widget.GetRenderWindow()
         render_window.SetMultiSamples(0)
         render_window.SetSwapBuffers(True)
+        
+        self.interactor = render_window.GetInteractor()
+        self.interactor.SetInteractorStyle(vtk.vtkInteractorStyleTrackballCamera())
         
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -371,27 +387,33 @@ class Robot3DViewer(QWidget):
     
     def add_compact_grid(self):
         """Add a smaller, more efficient grid"""
-        grid_size = 0.8
-        grid_resolution = 8
-        
+        grid_size = self._grid_size if hasattr(self, '_grid_size') else 0.8
+        grid_resolution = max(4, int(grid_size * 10))
+    
         grid_source = vtk.vtkPlaneSource()
         grid_source.SetOrigin(-grid_size, -grid_size, 0.0)
         grid_source.SetPoint1(grid_size, -grid_size, 0.0)
         grid_source.SetPoint2(-grid_size, grid_size, 0.0)
         grid_source.SetXResolution(grid_resolution)
         grid_source.SetYResolution(grid_resolution)
-        
+    
         grid_mapper = vtk.vtkPolyDataMapper()
         grid_mapper.SetInputConnection(grid_source.GetOutputPort())
-        
+    
         grid_actor = vtk.vtkActor()
         grid_actor.SetMapper(grid_mapper)
-        grid_actor.GetProperty().SetColor(0.25, 0.25, 0.35)
+        grid_actor._is_grid = True  # Mark for theme updates
+        theme = self._current_theme if hasattr(self, '_current_theme') else 'Dark'
+        if theme == 'Light':
+            grid_actor.GetProperty().SetColor(0.6, 0.6, 0.7)
+        else:
+            grid_actor.GetProperty().SetColor(0.25, 0.25, 0.35)
         grid_actor.GetProperty().SetOpacity(0.4)
         grid_actor.GetProperty().SetRepresentationToWireframe()
-        
+    
         self.renderer.AddActor(grid_actor)
-        
+    
+        # Add subtle axes indicators
         axes = vtk.vtkAxesActor()
         axes.SetTotalLength(0.15, 0.15, 0.15)
         axes.SetShaftType(vtk.vtkAxesActor.LINE_SHAFT)
@@ -578,13 +600,15 @@ class Robot3DViewer(QWidget):
         mapper.SetInputConnection(arrow_source.GetOutputPort())
         self.motion_arrow_actor.SetMapper(mapper)
         self.motion_arrow_actor.SetVisibility(False)
-        self.renderer.AddActor(self.motion_arrow_actor)
+        self.motion_arrow_actor.GetProperty().SetLighting(False)
+        self.indicator_renderer.AddActor(self.motion_arrow_actor)
 
         self.rpy_arc_plus = self._create_circular_arrow(False, 0.0, 0.0, 0.0)
         self.rpy_arc_minus = self._create_circular_arrow(True, 0.0, 0.0, 0.0)
         for arc in (self.rpy_arc_plus, self.rpy_arc_minus):
             arc.SetVisibility(False)
-            self.renderer.AddActor(arc)
+            arc.GetProperty().SetLighting(False)
+            self.indicator_renderer.AddActor(arc)
 
     def _create_circular_arrow(self, clockwise, cx, cy, cz):
         """Create a circular arrow - lower resolution"""
@@ -713,6 +737,34 @@ class Robot3DViewer(QWidget):
             t.RotateX(-90.0)
         return t
 
+    def _axis_rotation_alignment_transform(self, axis):
+        """
+        Rotate arc's default normal (+Z) to align with the given axis.
+        Used for joint rotation arcs.
+        """
+        ax, ay, az = axis
+        norm = math.sqrt(ax * ax + ay * ay + az * az)
+        if norm < 1e-9:
+            ax, ay, az = 0.0, 0.0, 1.0
+        else:
+            ax, ay, az = ax / norm, ay / norm, az / norm
+
+        t = vtk.vtkTransform()
+        t.Identity()
+
+        dot = az
+        cx, cy, cz = -ay, ax, 0.0
+        cross_norm = math.sqrt(cx * cx + cy * cy + cz * cz)
+
+        if cross_norm < 1e-6:
+            if dot < 0:
+                t.RotateWXYZ(180.0, 1.0, 0.0, 0.0)
+        else:
+            angle = math.degrees(math.acos(max(-1.0, min(1.0, dot))))
+            t.RotateWXYZ(angle, cx, cy, cz)
+
+        return t
+
     def _place_straight_arrow(self, base_tf, local_axis, color, scale=0.1):
         """Position the reusable arrow - smaller scale"""
         align = self._axis_alignment_transform(local_axis)
@@ -740,6 +792,20 @@ class Robot3DViewer(QWidget):
         arc.GetProperty().SetOpacity(1.0)
         arc.SetVisibility(True)
 
+    def _place_joint_rotation_arc(self, link_tf, axis, direction, color):
+        """Position a rotation arc around an arbitrary joint axis"""
+        align = self._axis_rotation_alignment_transform(axis)
+        combined = vtk.vtkTransform()
+        combined.Concatenate(link_tf)
+        combined.Concatenate(align)
+        combined.Scale(0.2, 0.2, 0.2)
+
+        arc = self.rpy_arc_plus if direction == 'plus' else self.rpy_arc_minus
+        arc.SetUserTransform(combined)
+        arc.GetProperty().SetColor(*color)
+        arc.GetProperty().SetOpacity(1.0)
+        arc.SetVisibility(True)
+
     def _show_motion_arrow(self, kind, name, direction, joint_positions):
         """Show arrow indicator - only if arrow enabled"""
         self.hide_motion_arrow()
@@ -754,12 +820,14 @@ class Robot3DViewer(QWidget):
             if not child_link:
                 return
             link_tf = self.get_transform_to_link(child_link, joint_positions)
-            self._place_straight_arrow(link_tf, axis, color, scale=0.1)
+            self._place_joint_rotation_arc(link_tf, axis, direction, color)
 
         elif kind == 'cartesian':
             ee_tf = self.get_transform_to_link(self.ee_link_name, joint_positions)
             if name in ('x', 'y', 'z'):
                 local_axis = {'x': (1.0, 0.0, 0.0), 'y': (0.0, 1.0, 0.0), 'z': (0.0, 0.0, 1.0)}[name]
+                if direction == 'minus':
+                    local_axis = tuple(-c for c in local_axis)
                 self._place_straight_arrow(ee_tf, local_axis, color, scale=0.15)
             elif name in ('roll', 'pitch', 'yaw'):
                 self._place_rotation_arc(ee_tf, name, direction, color)
@@ -811,7 +879,7 @@ class Robot3DViewer(QWidget):
             self.vtk_widget.GetRenderWindow().Render()
     
     def update_from_tf(self):
-        """Update robot poses from TF"""
+        """Update robot poses from TF - runs at ~14Hz for tracking"""
         if not self.tf_initialized or self.tf_buffer is None or not self._is_visible:
             return
         
@@ -1238,3 +1306,308 @@ class Robot3DViewer(QWidget):
     def get_animation_speed(self):
         """Get animation speed"""
         return self.animation_speed
+
+    def apply_theme(self, theme):
+        """Apply color theme to renderer"""
+        if theme == "Light":
+            self.renderer.SetBackground(0.95, 0.95, 0.97)
+            # Update grid color for light theme
+            for actor in self.renderer.GetActors():
+                if hasattr(actor, '_is_grid') and actor._is_grid:
+                    actor.GetProperty().SetColor(0.6, 0.6, 0.7)
+        else:
+            self.renderer.SetBackground(0.03, 0.03, 0.06)
+            for actor in self.renderer.GetActors():
+                if hasattr(actor, '_is_grid') and actor._is_grid:
+                    actor.GetProperty().SetColor(0.25, 0.25, 0.35)
+        self._needs_rerender = True
+        self._render_if_needed()
+
+    def set_camera_distance(self, distance):
+        """Set camera distance from robot"""
+        camera = self.renderer.GetActiveCamera()
+        pos = camera.GetPosition()
+        fp = camera.GetFocalPoint()
+        # Calculate direction vector
+        dx = pos[0] - fp[0]
+        dy = pos[1] - fp[1]
+        dz = pos[2] - fp[2]
+        length = math.sqrt(dx*dx + dy*dy + dz*dz)
+        if length > 0.001:
+            # Scale to new distance
+            scale = distance / length
+            new_pos = (fp[0] + dx*scale, fp[1] + dy*scale, fp[2] + dz*scale)
+            camera.SetPosition(new_pos[0], new_pos[1], new_pos[2])
+            self.renderer.ResetCameraClippingRange()
+            self._needs_rerender = True
+            self._render_if_needed()
+
+    def set_map_size(self, size):
+        """Set the grid/map size"""
+        # Remove old grid
+        for actor in self.renderer.GetActors():
+            if hasattr(actor, '_is_grid') and actor._is_grid:
+                self.renderer.RemoveActor(actor)
+    
+        # Create new grid with new size
+        self._grid_size = size
+        self.add_compact_grid()
+        self._needs_rerender = True
+        self._render_if_needed()
+
+    def set_anti_aliasing(self, enabled):
+        """Enable/disable anti-aliasing"""
+        render_window = self.vtk_widget.GetRenderWindow()
+        if enabled:
+            render_window.SetMultiSamples(8)
+        else:
+            render_window.SetMultiSamples(0)
+        self._needs_rerender = True
+        self._render_if_needed()
+
+    def set_visualization_enabled(self, enabled):
+        """Enable/disable the entire 3D visualization"""
+        if enabled:
+            # Show everything
+            for actor in self.link_actors.values():
+                actor.SetVisibility(True)
+            if self.ee_axes_actor:
+                self.ee_axes_actor.SetVisibility(True)
+            # Restore ghost visibility if needed
+            if self.ghost_enabled:
+                for actor in self.ghost_link_actors.values():
+                    actor.SetVisibility(True)
+                if self.ghost_ee_axes_actor:
+                    self.ghost_ee_axes_actor.SetVisibility(True)
+            # Start TF updates again
+            if not self.update_timer.isActive():
+                self.update_timer.start()
+            self._is_visible = True
+        else:
+            # Hide everything
+            for actor in self.link_actors.values():
+                actor.SetVisibility(False)
+            if self.ee_axes_actor:
+                self.ee_axes_actor.SetVisibility(False)
+            for actor in self.ghost_link_actors.values():
+                actor.SetVisibility(False)
+            if self.ghost_ee_axes_actor:
+                self.ghost_ee_axes_actor.SetVisibility(False)
+            for actor in self.ghost_actors:
+                actor.SetVisibility(False)
+            # Stop TF updates
+            self.update_timer.stop()
+            self._is_visible = False
+        self._needs_rerender = True
+        self._render_if_needed()
+
+    def set_stl_quality(self, quality):
+        """
+        Set STL mesh quality level.
+        quality: 'low', 'medium', 'high', 'original'
+        """
+        self._stl_quality = quality
+        self._needs_rerender = True
+        self._render_if_needed()
+
+    def get_stl_quality(self):
+        """Get current STL quality level"""
+        return getattr(self, '_stl_quality', 'medium')
+
+    def _load_mesh_with_quality(self, mesh_filename, color, quality='medium'):
+        """Load a mesh file with specified quality settings"""
+        try:
+            mesh_paths = [
+                os.path.join(self.mesh_path, mesh_filename),
+                os.path.join(self.mesh_path, mesh_filename.lower()),
+                os.path.join(self.mesh_path, mesh_filename.upper()),
+                os.path.join(self.mesh_path, mesh_filename.capitalize()),
+                mesh_filename,
+            ]
+            
+            for path in mesh_paths:
+                if os.path.exists(path):
+                    reader = None
+                    if path.lower().endswith('.stl'):
+                        reader = vtk.vtkSTLReader()
+                        reader.SetFileName(path)
+                        
+                        # Apply quality settings
+                        if quality == 'low':
+                            # Reduce quality significantly
+                            decimate = vtk.vtkDecimatePro()
+                            decimate.SetInputConnection(reader.GetOutputPort())
+                            decimate.SetTargetReduction(0.7)  # Remove 70% of polygons
+                            decimate.PreserveTopologyOn()
+                            decimate.Update()
+                            
+                            mapper = vtk.vtkPolyDataMapper()
+                            mapper.SetInputConnection(decimate.GetOutputPort())
+                        elif quality == 'medium':
+                            decimate = vtk.vtkDecimatePro()
+                            decimate.SetInputConnection(reader.GetOutputPort())
+                            decimate.SetTargetReduction(0.3)  # Remove 30% of polygons
+                            decimate.PreserveTopologyOn()
+                            decimate.Update()
+                            
+                            mapper = vtk.vtkPolyDataMapper()
+                            mapper.SetInputConnection(decimate.GetOutputPort())
+                        elif quality == 'high':
+                            # Slight quality improvement
+                            smooth = vtk.vtkSmoothPolyDataFilter()
+                            smooth.SetInputConnection(reader.GetOutputPort())
+                            smooth.SetNumberOfIterations(5)
+                            smooth.SetRelaxationFactor(0.1)
+                            smooth.Update()
+                            
+                            mapper = vtk.vtkPolyDataMapper()
+                            mapper.SetInputConnection(smooth.GetOutputPort())
+                        else:  # 'original'
+                            mapper = vtk.vtkPolyDataMapper()
+                            mapper.SetInputConnection(reader.GetOutputPort())
+                        
+                        actor = vtk.vtkActor()
+                        actor.SetMapper(mapper)
+                        actor.GetProperty().SetColor(color)
+                        
+                        # Quality-based material settings
+                        if quality == 'low':
+                            actor.GetProperty().SetSpecular(0.0)
+                            actor.GetProperty().SetSpecularPower(0)
+                            actor.GetProperty().SetInterpolationToFlat()
+                        elif quality == 'medium':
+                            actor.GetProperty().SetSpecular(0.1)
+                            actor.GetProperty().SetSpecularPower(10)
+                            actor.GetProperty().SetInterpolationToGouraud()
+                        elif quality == 'high':
+                            actor.GetProperty().SetSpecular(0.2)
+                            actor.GetProperty().SetSpecularPower(20)
+                            actor.GetProperty().SetInterpolationToPhong()
+                        else:  # 'original'
+                            actor.GetProperty().SetSpecular(0.3)
+                            actor.GetProperty().SetSpecularPower(20)
+                            actor.GetProperty().SetInterpolationToGouraud()
+                        
+                        return actor
+                    
+            # Fallback: create a box
+            source = vtk.vtkCubeSource()
+            source.SetXLength(0.04)
+            source.SetYLength(0.04)
+            source.SetZLength(0.04)
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputConnection(source.GetOutputPort())
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(color)
+            actor.GetProperty().SetInterpolationToFlat()
+            return actor
+            
+        except Exception:
+            source = vtk.vtkSphereSource()
+            source.SetRadius(0.02)
+            source.SetThetaResolution(12)
+            source.SetPhiResolution(12)
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputConnection(source.GetOutputPort())
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(color)
+            actor.GetProperty().SetInterpolationToFlat()
+            return actor
+
+    def reload_meshes_with_quality(self, quality):
+        """Reload all robot meshes with new quality setting"""
+        self._stl_quality = quality
+        
+        # Store current transforms
+        transforms = {}
+        for link_name in self.link_names:
+            if link_name in self.link_transforms:
+                transforms[link_name] = self.link_transforms[link_name]
+        
+        # Clear existing actors
+        for link_name, actor in self.link_actors.items():
+            self.renderer.RemoveActor(actor)
+        
+        self.link_actors.clear()
+        self.ghost_link_actors.clear()
+        
+        # Reload meshes with new quality
+        if self.urdf_parser.link_meshes:
+            link_meshes = self.urdf_parser.link_meshes
+        else:
+            link_meshes = {
+                'base_link': 'base_link.STL',
+                'Link1': 'Link1.STL',
+                'Link2': 'Link2.STL',
+                'Link3': 'Link3.STL',
+                'Link4': 'Link4.STL',
+                'Link5': 'Link5.STL',
+                'Link6': 'Link6.STL',
+            }
+        
+        colors = {
+            'base_link': (0.4, 0.4, 0.5),
+            'Link1': (0.5, 0.6, 0.7),
+            'Link2': (0.6, 0.7, 0.8),
+            'Link3': (0.65, 0.75, 0.85),
+            'Link4': (0.7, 0.8, 0.9),
+            'Link5': (0.75, 0.82, 0.92),
+            'Link6': (0.8, 0.85, 0.95),
+        }
+        
+        for link_name in self.urdf_parser.link_meshes.keys():
+            if link_name in ["world", "ground_link", "end"]:
+                continue
+            
+            mesh_file = None
+            for mesh_link, mesh_file_name in link_meshes.items():
+                if mesh_link.lower() == link_name.lower():
+                    mesh_file = mesh_file_name
+                    break
+            
+            if mesh_file is None:
+                for mesh_link, mesh_file_name in link_meshes.items():
+                    if link_name.lower() in mesh_link.lower() or mesh_link.lower() in link_name.lower():
+                        mesh_file = mesh_file_name
+                        break
+            
+            if mesh_file is None:
+                mesh_file = 'base_link.STL'
+            
+            color = colors.get(link_name, (0.7, 0.7, 0.8))
+            if link_name not in colors:
+                for key in colors:
+                    if key.lower() == link_name.lower():
+                        color = colors[key]
+                        break
+            
+            self.link_colors[link_name] = color
+            self.link_original_colors[link_name] = color
+            
+            actor = self._load_mesh_with_quality(mesh_file, color, quality)
+            self.link_actors[link_name] = actor
+            self.renderer.AddActor(actor)
+            
+            if link_name in transforms:
+                actor.SetUserTransform(transforms[link_name])
+            else:
+                transform = vtk.vtkTransform()
+                transform.Identity()
+                self.link_transforms[link_name] = transform
+                actor.SetUserTransform(transform)
+        
+        # Recreate ghost actors
+        for link_name, actor in self.link_actors.items():
+            ghost_actor = vtk.vtkActor()
+            ghost_actor.SetMapper(actor.GetMapper())
+            ghost_actor.GetProperty().SetColor(0.0, 0.8, 0.8)
+            ghost_actor.GetProperty().SetOpacity(0.4)
+            ghost_actor.GetProperty().SetSpecular(0.05)
+            ghost_actor.SetVisibility(False)
+            self.renderer.AddActor(ghost_actor)
+            self.ghost_link_actors[link_name] = ghost_actor
+        
+        self._needs_rerender = True
+        self._render_if_needed()

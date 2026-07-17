@@ -1,23 +1,25 @@
 from PyQt6.QtWidgets import QPushButton
+from PyQt6.QtGui import QCursor
+from PyQt6.QtCore import Qt
+from theme import Palette, button_qss
+
 
 class StyledButton(QPushButton):
+    """A round jog button (the +/- controls for joints & Cartesian axes)."""
+
     def __init__(self, text, parent=None):
         super().__init__(text, parent)
-        self.setFixedSize(40,40)
-        self.setStyleSheet("""
-            QPushButton {
-                background-color: #2a2a3e;
-                color: #ffffff;
-                border: 2px solid #3a3a5e;
-                border-radius: 20px;
-                font-size: 18px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #3a3a5e;
-                border-color: #5a5a8e;
-            }
-            QPushButton:pressed {
-                background-color: #4a4a6e;
-            }
-        """)
+        self.setFixedSize(42, 42)
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.setStyleSheet(button_qss(
+            bg=Palette.CARD_RAISED,
+            fg=Palette.TEXT,
+            border=Palette.BORDER,
+            hover_bg=Palette.BORDER,
+            hover_border=Palette.ACCENT,
+            pressed_bg=Palette.ACCENT_DIM,
+            radius=21,
+            padding="0px",
+            font_size=18,
+            bold=True,
+        ))
